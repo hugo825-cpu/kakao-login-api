@@ -1,34 +1,48 @@
-import { initializeApp, cert, getApps } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-import axios from "axios";
+// api/kakaoSignIn.js
+import admin from 'firebase-admin';
 
-if (!getApps().length) {
-  initializeApp({
-    credential: cert({
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
     }),
   });
 }
 
 export default async function handler(req, res) {
-  try {
-    const { accessToken } = req.body;
+  // 헬스체크
+  if (req.method === 'GET' && req.query.ping) {
+    return res.status(200).json({ ok: true });
+  }
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
-    // 카카오 유저 정보 확인
-    const kakaoRes = await axios.get("https://kapi.kakao.com/v2/user/me", {
+  try {
+    const { accessToken } = req.body || {};
+    if (!accessToken) return res.status(400).json({ error: 'Missing accessToken' });
+
+    // Kakao 사용자 조회 (axios → fetch)
+    const r = await fetch('https://kapi.kakao.com/v2/user/me', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    if (!r.ok) {
+      const txt = await r.text();
+      return res.status(401).json({ error: 'Invalid Kakao token', detail: txt });
+    }
+    const kakaoUser = await r.json();
+    const kakaoUid = String(kakaoUser.id);
 
-    const kakaoId = kakaoRes.data.id.toString();
+    const customToken = await admin.auth().createCustomToken(kakaoUid, {
+      provider: 'kakao',
+      nickname: kakaoUser.kakao_account?.profile?.nickname ?? null,
+    });
 
-    // Firebase custom token 발급
-    const customToken = await getAuth().createCustomToken(kakaoId);
-
-    res.status(200).json({ customToken });
-  } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).json({ error: "Kakao SignIn failed" });
+    return res.status(200).json({ customToken });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'INTERNAL', message: String(e) });
   }
 }
